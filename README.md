@@ -59,3 +59,71 @@ A web-based classroom system where up to 200 students can use their mobile phone
 - **Audio**: WebRTC getUserMedia for microphone access
 - **Signaling**: WebSocket for real-time communication
 - **NAT Traversal**: TURN server for cross-network connectivity
+
+### nginx configureation
+```bash
+server {
+
+   listen 443 ssl;
+   root /var/www/home/;
+
+   index index.php index.html index.htm index.nginx-debian.html;
+
+   server_name DOMAIN_NAME;
+
+   ssl_certificate /etc/letsencrypt/live/DOMAIN_NAME/fullchain.pem; # managed by Certbot
+   ssl_certificate_key /etc/letsencrypt/live/DOMAIN_NAME/privkey.pem; # managed by Certbot
+
+   location / {
+      proxy_pass http://127.0.0.1:9000;
+   }
+
+   location /ws {
+      proxy_pass http://127.0.0.1:9000;
+      proxy_http_version 1.1;
+
+      # WebSocket headers
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+
+      # Forward real IP and host
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+
+      # Timeouts for long WebSocket connections
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+   }
+}
+
+```
+
+- /lib/systemd/system/classroom.service
+```
+[Unit]
+Description=API Service
+ConditionPathExists=/usr/local/classroom/
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+Restart=always
+RestartSec=5
+
+WorkingDirectory=/usr/local/classroom/
+ExecStart=/usr/local/classroom/classroom_app
+
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=classroom
+
+[Install]
+WantedBy=multi-user.target
+```
+
+>systemctl status classroom.service
