@@ -1,0 +1,322 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>Teacher Control Panel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#4CAF50',
+            secondary: '#2196F3',
+            danger: '#f44336',
+            warning: '#ff9800'
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- Header -->
+  <div class="bg-white shadow-sm border-b">
+    <div class="max-w-7xl mx-auto px-4 py-4">
+      <h1 class="text-2xl font-bold text-gray-800">Teacher Control Panel</h1>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="max-w-7xl mx-auto px-4 py-6">
+    <!-- Status -->
+    <div id='status' class='mb-6 p-4 rounded-lg text-center font-medium'>
+      <span class="text-gray-600">Connecting...</span>
+    </div>
+
+    <!-- Current Speaker -->
+    <div id='currentSpeaker' class='hidden mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg'>
+      <div class="flex items-center space-x-2">
+        <span class="text-sm font-medium text-blue-800">Currently Speaking:</span>
+        <span id='speakerName' class="font-semibold text-blue-900"></span>
+        <span class="text-sm text-blue-600">(Channel <span id='speakerChannel'></span>)</span>
+      </div>
+    </div>
+
+    <!-- Connected Students -->
+    <div id='connectedStudents' class='mb-8'>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-800">Connected Students</h2>
+        <span id='studentCount' class="bg-primary text-white px-3 py-1 rounded-full text-sm font-medium">0</span>
+      </div>
+      <div id='studentsList' class='flex flex-wrap gap-2 min-h-[60px] p-4 bg-white rounded-lg shadow-sm border'>
+        <div class="text-gray-500 text-sm">No students connected</div>
+      </div>
+    </div>
+
+    <!-- Raised Hands -->
+    <div id='raisedHands'>
+      <h2 class="text-lg font-semibold text-gray-800 mb-4">Raised Hands</h2>
+      <div id='students' class='space-y-4'>
+        <div class="text-gray-500 text-sm text-center py-8">No hands raised</div>
+      </div>
+    </div>
+  </div>
+
+  <script src='/client.js'></script>
+  <script>
+    const id = 'teacher';
+    const name = 'Teacher';
+    const ws = wsConnect('teacher', id, name);
+    const peers = {};
+    let currentSpeaker = null;
+    let turnConfig = null;
+    let connectedStudents = new Map();
+
+    // Update status display
+    function updateStatus(message, isConnected) {
+      const statusEl = document.getElementById('status');
+      statusEl.innerHTML = `<span class="${isConnected ? 'text-green-600' : 'text-gray-600'}">${message}</span>`;
+    }
+
+    ws.onopen = () => {
+      updateStatus('Connected', true);
+    }
+
+    ws.onmessage = async(ev) => {
+      const msg = JSON.parse(ev.data);
+      if(msg.type === 'config') {
+        turnConfig = msg.turn;
+      } else if(msg.type === 'connected_students') {
+        updateConnectedStudentsList(msg.students);
+      } else if(msg.type === 'student_update') {
+        handleStudentUpdate(msg);
+      } else if(msg.type === 'raise_hand') {
+        addStudentCard(msg.id, msg.name, msg.channel);
+      } else if(msg.type === 'remove_from_raised_hands') {
+        removeFromRaisedHands(msg.id);
+      } else if(msg.type === 'offer') {
+        await handleOffer(msg.from, msg.sdp);
+      } else if(msg.type === 'ice') {
+        const p = peers[msg.from];
+        if(p && msg.candidate) {
+          try {
+            await p.pc.addIceCandidate(msg.candidate);
+          } catch(e) {
+            console.warn(e);
+          }
+        }
+      }
+    }
+
+    function updateConnectedStudentsList(students) {
+      connectedStudents.clear();
+      const studentsList = document.getElementById('studentsList');
+      
+      if(students.length === 0) {
+        studentsList.innerHTML = '<div class="text-gray-500 text-sm">No students connected</div>';
+      } else {
+        studentsList.innerHTML = '';
+        students.forEach(student => {
+          connectedStudents.set(student.id, student);
+          addStudentToList(student);
+        });
+      }
+      
+      updateStudentCount();
+    }
+
+    function addStudentToList(student) {
+      const studentsList = document.getElementById('studentsList');
+      const studentItem = document.createElement('div');
+      studentItem.className = 'bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium';
+      studentItem.id = 'connected-' + student.id;
+      studentItem.textContent = `${student.name} (Ch${student.channel})`;
+      studentsList.appendChild(studentItem);
+    }
+
+    function handleStudentUpdate(msg) {
+      if(msg.action === 'connected') {
+        const student = {
+          id: msg.id,
+          name: msg.name,
+          channel: msg.channel
+        };
+        connectedStudents.set(msg.id, student);
+        addStudentToList(student);
+        
+        // Update empty state
+        const studentsList = document.getElementById('studentsList');
+        const emptyState = studentsList.querySelector('.text-gray-500');
+        if(emptyState) {
+          emptyState.remove();
+        }
+      } else if(msg.action === 'disconnected') {
+        connectedStudents.delete(msg.id);
+        const studentItem = document.getElementById('connected-' + msg.id);
+        if(studentItem) {
+          studentItem.remove();
+        }
+        // Also remove from raised hands if they were there
+        removeFromRaisedHands(msg.id);
+        
+        // Show empty state if no students
+        if(connectedStudents.size === 0) {
+          const studentsList = document.getElementById('studentsList');
+          studentsList.innerHTML = '<div class="text-gray-500 text-sm">No students connected</div>';
+        }
+      }
+      updateStudentCount();
+    }
+
+    function updateStudentCount() {
+      document.getElementById('studentCount').textContent = connectedStudents.size;
+    }
+
+    function removeFromRaisedHands(studentId) {
+      const studentCard = document.getElementById('stu-' + studentId);
+      if(studentCard) {
+        studentCard.remove();
+      }
+      
+      // Also remove from peers if they were speaking
+      if(peers[studentId]) {
+        if(peers[studentId].pc) {
+          peers[studentId].pc.close();
+          peers[studentId].pc = null;
+        }
+        delete peers[studentId];
+      }
+      
+      // Update current speaker if this was the current speaker
+      if(currentSpeaker === studentId) {
+        currentSpeaker = null;
+        document.getElementById('currentSpeaker').classList.add('hidden');
+      }
+      
+      // Show empty state if no raised hands
+      const studentsContainer = document.getElementById('students');
+      const hasRaisedHands = studentsContainer.querySelector('.student');
+      if(!hasRaisedHands) {
+        studentsContainer.innerHTML = '<div class="text-gray-500 text-sm text-center py-8">No hands raised</div>';
+      }
+    }
+
+    function addStudentCard(id, name, channel) {
+      if(document.getElementById('stu-' + id)) return;
+      
+      // Remove empty state
+      const studentsContainer = document.getElementById('students');
+      const emptyState = studentsContainer.querySelector('.text-gray-500');
+      if(emptyState) {
+        emptyState.remove();
+      }
+      
+      const div = document.createElement('div');
+      div.id = 'stu-' + id;
+      div.className = 'bg-white rounded-lg shadow-sm border p-4 space-y-3';
+      div.innerHTML = `
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="font-semibold text-gray-800">${name}</div>
+            <div class="text-sm text-gray-600">Channel ${channel || 'Unknown'}</div>
+          </div>
+          <div class="flex space-x-2">
+            <button class="allow-btn bg-primary text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 transition-colors" onclick="allowStudent('${id}', '${name}', '${channel}')">
+              Allow to Speak
+            </button>
+            <button class="mute-btn bg-danger text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-danger focus:ring-offset-2 transition-colors" onclick="muteStudent('${id}')">
+              Mute
+            </button>
+          </div>
+        </div>
+        <audio autoplay controls class="w-full"></audio>
+      `;
+      
+      studentsContainer.appendChild(div);
+      peers[id] = { pc: null, audioEl: div.querySelector('audio'), name: name, channel: channel };
+    }
+
+    async function allowStudent(id, name, channel) {
+      // Mute current speaker if any
+      if(currentSpeaker && currentSpeaker !== id) {
+        muteStudent(currentSpeaker);
+      }
+      
+      // Allow new student
+      ws.send(JSON.stringify({type: 'allow', to: id}));
+      currentSpeaker = id;
+      
+      // Update UI
+      updateCurrentSpeaker(name, channel);
+      updateStudentUI(id, true);
+    }
+
+    function muteStudent(id) {
+      ws.send(JSON.stringify({type: 'mute', to: id}));
+      
+      if(peers[id]) {
+        if(peers[id].pc) {
+          peers[id].pc.close();
+          peers[id].pc = null;
+        }
+      }
+      
+      if(currentSpeaker === id) {
+        currentSpeaker = null;
+        document.getElementById('currentSpeaker').classList.add('hidden');
+      }
+      
+      updateStudentUI(id, false);
+    }
+
+    function updateCurrentSpeaker(name, channel) {
+      document.getElementById('speakerName').textContent = name;
+      document.getElementById('speakerChannel').textContent = channel;
+      document.getElementById('currentSpeaker').classList.remove('hidden');
+    }
+
+    function updateStudentUI(id, isSpeaking) {
+      const studentDiv = document.getElementById('stu-' + id);
+      if(studentDiv) {
+        if(isSpeaking) {
+          studentDiv.classList.add('ring-2', 'ring-primary', 'ring-opacity-50');
+        } else {
+          studentDiv.classList.remove('ring-2', 'ring-primary', 'ring-opacity-50');
+        }
+      }
+    }
+
+    async function handleOffer(from, sdp) {
+      const iceServers = [
+        { urls: 'stun:stun.l.google.com:19302' }
+      ];
+      
+      if(turnConfig && turnConfig.urls) {
+        iceServers.push(turnConfig);
+      }
+      
+      const pc = new RTCPeerConnection({ iceServers });
+      
+      peers[from] = peers[from] || {};
+      peers[from].pc = pc;
+      
+      pc.ontrack = (e) => {
+        peers[from].audioEl.srcObject = e.streams[0];
+      };
+      
+      pc.onicecandidate = (e) => {
+        if(e.candidate) {
+          ws.send(JSON.stringify({type: 'ice', candidate: e.candidate, to: from}));
+        }
+      };
+      
+      await pc.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: sdp}));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({type: 'answer', to: from, sdp: answer.sdp}));
+    }
+  </script>
+</body>
+</html>

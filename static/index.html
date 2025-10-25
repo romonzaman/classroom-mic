@@ -1,0 +1,283 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>Student Microphone</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#4CAF50',
+            secondary: '#2196F3',
+            danger: '#f44336',
+            warning: '#ff9800'
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- Header -->
+  <div class="bg-white shadow-sm border-b">
+    <div class="max-w-md mx-auto px-4 py-4">
+      <h1 class="text-xl font-bold text-gray-800 text-center">Student Microphone</h1>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="max-w-md mx-auto px-4 py-6">
+    <!-- Status -->
+    <div id='status' class='mb-6 p-3 rounded-lg text-center font-medium'>
+      <span class="text-gray-600">Disconnected</span>
+    </div>
+
+    <!-- Login Form -->
+    <div id='loginForm' class='space-y-4'>
+      <div class='bg-white rounded-lg shadow-sm p-6 space-y-4'>
+        <div>
+          <label for='studentName' class='block text-sm font-medium text-gray-700 mb-2'>Your Name</label>
+          <input 
+            type='text' 
+            id='studentName' 
+            placeholder='Enter your name' 
+            required
+            class='w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent'
+          >
+        </div>
+        
+        <div>
+          <label for='channel' class='block text-sm font-medium text-gray-700 mb-2'>Channel Number (1-200)</label>
+          <select 
+            id='channel'
+            class='w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent'
+          >
+            <option value=''>Select Channel</option>
+          </select>
+        </div>
+        
+        <button 
+          id='connect' 
+          class='w-full bg-warning text-white py-3 px-4 rounded-md font-medium hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-warning focus:ring-offset-2 transition-colors'
+        >
+          Connect to Classroom
+        </button>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div id='controls' class='hidden space-y-4'>
+      <div class='bg-white rounded-lg shadow-sm p-6 space-y-4'>
+        <div class='grid grid-cols-1 gap-3'>
+          <button 
+            id='raise' 
+            class='bg-primary text-white py-3 px-4 rounded-md font-medium hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 transition-colors flex items-center justify-center space-x-2'
+          >
+            <span>✋</span>
+            <span>Raise Hand</span>
+          </button>
+          
+          <button 
+            id='speak' 
+            disabled
+            class='bg-secondary text-white py-3 px-4 rounded-md font-medium hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center space-x-2'
+          >
+            <span>🎙️</span>
+            <span>Speak</span>
+          </button>
+          
+          <button 
+            id='disconnect' 
+            class='bg-danger text-white py-3 px-4 rounded-md font-medium hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-danger focus:ring-offset-2 transition-colors flex items-center justify-center space-x-2'
+          >
+            <span>📴</span>
+            <span>Disconnect</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src='/client.js'></script>
+  <script>
+    // Populate channel dropdown
+    const channelSelect = document.getElementById('channel');
+    for(let i = 1; i <= 200; i++) {
+      const option = document.createElement('option');
+      option.value = i;
+      option.textContent = `Channel ${i}`;
+      channelSelect.appendChild(option);
+    }
+
+    let ws = null;
+    let pc = null;
+    let localStream = null;
+    let studentName = '';
+    let channel = '';
+
+    // Load saved data from localStorage
+    function loadSavedData() {
+      const savedName = localStorage.getItem('studentName');
+      const savedChannel = localStorage.getItem('studentChannel');
+      
+      if (savedName) {
+        document.getElementById('studentName').value = savedName;
+      }
+      if (savedChannel) {
+        document.getElementById('channel').value = savedChannel;
+      }
+    }
+
+    // Save data to localStorage
+    function saveData(name, ch) {
+      localStorage.setItem('studentName', name);
+      localStorage.setItem('studentChannel', ch);
+    }
+
+    // Flash message function
+    function showFlashMessage(message) {
+      // Remove any existing flash message
+      const existingFlash = document.querySelector('.flash-message');
+      if (existingFlash) {
+        existingFlash.remove();
+      }
+      
+      // Create new flash message
+      const flashDiv = document.createElement('div');
+      flashDiv.className = 'flash-message fixed top-4 right-4 bg-primary text-white px-4 py-3 rounded-lg shadow-lg z-50 opacity-100 transition-opacity duration-500';
+      flashDiv.textContent = message;
+      document.body.appendChild(flashDiv);
+      
+      // Fade out after 4 seconds
+      setTimeout(() => {
+        flashDiv.classList.add('opacity-0');
+        setTimeout(() => {
+          if (flashDiv.parentNode) {
+            flashDiv.remove();
+          }
+        }, 500);
+      }, 4000);
+    }
+
+    // Update status display
+    function updateStatus(message, isConnected) {
+      const statusEl = document.getElementById('status');
+      statusEl.innerHTML = `<span class="${isConnected ? 'text-green-600' : 'text-gray-600'}">${message}</span>`;
+    }
+
+    document.getElementById('connect').onclick = () => {
+      const name = document.getElementById('studentName').value.trim();
+      const ch = document.getElementById('channel').value;
+      
+      if (!name || !ch) {
+        showFlashMessage('Please enter your name and select a channel');
+        return;
+      }
+      
+      // Save data to localStorage
+      saveData(name, ch);
+      
+      studentName = name;
+      channel = ch;
+      const id = `channel_${ch}_${Math.random().toString(36).slice(2,8)}`;
+      
+      ws = wsConnect('student', id, studentName, channel);
+      ws.onopen = () => {
+        updateStatus(`Connected as ${studentName} on Channel ${channel}`, true);
+        document.getElementById('loginForm').classList.add('hidden');
+        document.getElementById('controls').classList.remove('hidden');
+      };
+      
+      ws.onmessage = async(ev) => {
+        const msg = JSON.parse(ev.data);
+        if(msg.type === 'config') {
+          turnConfig = msg.turn;
+        } else if(msg.type === 'allowed') {
+          document.getElementById('speak').disabled = false;
+          startSpeaking();
+        } else if(msg.type === 'mute') {
+          stopSpeaking();
+        } else if(msg.type === 'answer') {
+          await pc.setRemoteDescription(new RTCSessionDescription({type:'answer',sdp:msg.sdp}));
+        } else if(msg.type === 'ice' && msg.candidate) {
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch(e) {
+            console.warn(e);
+          }
+        }
+      };
+      
+      ws.onclose = () => {
+        updateStatus('Disconnected', false);
+        document.getElementById('loginForm').classList.remove('hidden');
+        document.getElementById('controls').classList.add('hidden');
+      };
+    };
+
+    document.getElementById('raise').onclick = () => {
+      if(ws) {
+        ws.send(JSON.stringify({type:'raise_hand'}));
+        showFlashMessage('✋ Hand raised!');
+      }
+    };
+
+    document.getElementById('disconnect').onclick = () => {
+      if(ws) {
+        ws.close();
+      }
+      updateStatus('Disconnected', false);
+      document.getElementById('loginForm').classList.remove('hidden');
+      document.getElementById('controls').classList.add('hidden');
+    };
+
+    async function startSpeaking() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({audio: true});
+        
+        const iceServers = [
+          { urls: 'stun:stun.l.google.com:19302' }
+        ];
+        
+        if(turnConfig && turnConfig.urls) {
+          iceServers.push(turnConfig);
+        }
+        
+        pc = new RTCPeerConnection({ iceServers });
+        
+        localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+        pc.onicecandidate = (e) => {
+          if(e.candidate && ws) {
+            ws.send(JSON.stringify({type:'ice',candidate:e.candidate,to:'teacher'}));
+          }
+        };
+        
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({type:'offer',sdp:offer.sdp}));
+        document.getElementById('speak').disabled = true;
+      } catch(error) {
+        console.error('Error starting audio:', error);
+        showFlashMessage('Error accessing microphone. Please check permissions.');
+      }
+    }
+
+    function stopSpeaking() {
+      if(localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+      }
+      if(pc) {
+        pc.close();
+        pc = null;
+      }
+      document.getElementById('speak').disabled = true;
+    }
+
+    // Load saved data when page loads
+    loadSavedData();
+  </script>
+</body>
+</html>
